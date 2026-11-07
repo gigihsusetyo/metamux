@@ -152,8 +152,30 @@ Runs the real CLI in a temp folder: an approved `dryrun` job must land in
 
 ## Roadmap
 
+**v1.1 - Video, same flows**
+- Instagram Reels (`media_type: REELS`, public video URLs)
+- Threads video posts (`media_type: VIDEO`)
+
+**v1.2 - Facebook Page Reels**
+- Page Reels via the three-phase `video_reels` upload (start → upload → finish)
+
+**v2.0 - Stories everywhere**
+- A new `"format"` field in the job schema: `"feed"` | `"reel"` | `"story"`
+- Instagram Stories (`media_type: STORIES`) - plain media only; the API
+  cannot attach interactive stickers (link, poll, location)
+- Facebook Page Stories (`photo_stories` for photos, three-phase
+  `video_stories` for video)
+- Why this matters: Meta offers **no native scheduling for Reels or
+  Stories** - they must be published at the moment they go live, which is
+  exactly the timing layer MetaMux's daemon already provides.
+
+**v2.x - Beyond Meta (optional)**
+- An experimental, opt-in X (Twitter) adapter (`x:<alias>`), kept outside
+  the Meta core: it needs its own OAuth flow and is subject to X's own
+  API pricing.
+
+**Anytime**
 - Threads reply chains / thread series
-- Instagram Reels (`media_type: REELS`)
 - Optional media hosting helper for local files (S3 / Drive public links)
 - Per-account rate-limit awareness
 
