@@ -52,7 +52,7 @@ small VM. That is MetaMux.
 - **File-based queue** - one JSON file per post (`queue/` → `done/` / `failed/`). No database, no web server, nothing to migrate. `ls` is your monitoring tool.
 - **Approval gate** - the daemon only publishes jobs with `"status": "approved"`. Drafts are never touched. A human (or an AI agent on their behalf) proposes content; a human approves; the daemon publishes. In production use, this gate is what made unattended publishing trustworthy.
 - **Multi-account mux** - define as many account sets as you like in `accounts.json`. A target is `"<platform>:<alias>"` (`page:main`, `ig:studio`, `threads:main`, ...), so one job can fan out across platforms *and* brands in a single run.
-- **Official APIs only** - Facebook Page posts, Instagram container publishing (single image, carousel, and Reels) and Threads publishing (text, image, video), exactly the flows Meta documents. No scraping, no unofficial endpoints.
+- **Official APIs only** - Facebook Page posts and Stories, Instagram container publishing (single image, carousel, Reels, and Stories) and Threads publishing (text, image, video), exactly the flows Meta documents. No scraping, no unofficial endpoints.
 - **Failure semantics that respect the platform** - ordinary failures retry once, then move to `failed/`. Rate limits back the job off for 15 minutes *without* burning its attempts.
 - **Secrets stay secret** - tokens live in `accounts.json` (chmod 600, git-ignored) or in environment variables via `"env:VAR_NAME"` references. Nothing secret is ever logged.
 
@@ -116,7 +116,7 @@ walkthrough is in **[docs/SETUP-META-APP.md](docs/SETUP-META-APP.md)**.
 | `id` | Unique job name; becomes the filename in `queue/` |
 | `caption` | The exact text that will be published |
 | `media` | Media list. **Instagram & Threads require public URLs.** Facebook Pages accept public URLs *or* local file paths. |
-| `format` | Optional. `feed` (default) or `reel`. A single video URL is auto-detected as a Reel on Instagram and a video post on Threads even without this field; `reel` covers extension-less video URLs |
+| `format` | Optional. `feed` (default), `reel`, or `story`. A single video URL is auto-detected as a Reel on Instagram and a video post on Threads even without this field; `reel` covers extension-less video URLs. `story` takes exactly one photo or video and publishes it as an Instagram Story or a Facebook Page Story - no caption, no stickers (the APIs offer neither), and Threads targets are rejected because Threads has no Stories |
 | `targets` | Any mix of `page:<alias>`, `ig:<alias>`, `threads:<alias>`, plus `dryrun` for testing |
 | `publish_at` | ISO 8601 with timezone. The scheduler owns the clock - adapters publish "now" when a job falls due |
 | `status` | `draft` (never published) or `approved` (will publish when due) |
@@ -165,8 +165,8 @@ the right API calls - no network, no tokens.
 **v1.2 - Facebook Page Reels**
 - Page Reels via the three-phase `video_reels` upload (start → upload → finish)
 
-**v2.0 - Stories everywhere**
-- A new `"format"` field in the job schema: `"feed"` | `"reel"` | `"story"`
+**v2.0 - Stories everywhere** ✅ *shipped*
+- A `"format"` field in the job schema: `"feed"` | `"reel"` | `"story"`
 - Instagram Stories (`media_type: STORIES`) - plain media only; the API
   cannot attach interactive stickers (link, poll, location)
 - Facebook Page Stories (`photo_stories` for photos, three-phase

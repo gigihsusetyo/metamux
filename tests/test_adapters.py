@@ -10,6 +10,12 @@ tests assert that each job shape produces the right API calls:
   - IG local file     -> rejected with JobError before any API call
   - Threads text      -> TEXT container
   - Threads video     -> VIDEO container with video_url
+  - IG story image    -> STORIES container, no caption attached
+  - IG story video    -> STORIES container with video_url
+  - Page story photo  -> unpublished photo upload, then photo_stories
+  - Page story video  -> video_stories start -> rupload -> finish
+  - Story misuse      -> multi-media IG story, text-only Page story and any
+                         Threads story are rejected with JobError
 
 Run: python3 tests/test_adapters.py
 """
@@ -36,7 +42,28 @@ def fake_graph(path, token, params=None, method="POST"):
         return {"status_code": "FINISHED"}
     if path.endswith("/media_publish"):
         return {"id": "ig-published"}
+    if path.endswith("/photo_stories"):
+        return {"post_id": "story-photo-1"}
+    if path.endswith("/video_stories"):
+        if (params or {}).get("upload_phase") == "start":
+            return {"video_id": "vid-1",
+                    "upload_url": "https://rupload.test/vid-1"}
+        return {"post_id": "story-video-1"}
+    if path.endswith("/photos"):
+        return {"id": "photo-1"}
     return {"id": "ig-container"}
+
+
+RUPLOADS = []
+
+
+def fake_rupload(upload_url, token, data):
+    RUPLOADS.append((upload_url, data))
+    return {}
+
+
+mm.fetch_media_bytes = lambda item: b"fake-video-bytes"
+mm.rupload_binary = fake_rupload
 
 
 def fake_threads(path, token, params=None, method="POST"):
@@ -140,6 +167,88 @@ def main():
     c = creates("threads")
     check("threads image stays IMAGE",
           c[0][3].get("media_type") == "IMAGE")
+
+    # IG story, image: STORIES container, and NO caption attached
+    CALLS.clear()
+    out = mm.publish_ig(job(media=["https://x.test/s.jpg"],
+                            format="story"), "main")
+    c = creates("graph")
+    check("ig story image publishes", out == "ig-published")
+    check("ig story uses media_type STORIES + image_url, no caption",
+          c[0][3].get("media_type") == "STORIES"
+          and c[0][3].get("image_url") == "https://x.test/s.jpg"
+          and "caption" not in c[0][3])
+
+    # IG story, video
+    CALLS.clear()
+    mm.publish_ig(job(media=["https://x.test/s.mp4"], format="story"), "main")
+    c = creates("graph")
+    check("ig story video uses STORIES + video_url",
+          c[0][3].get("media_type") == "STORIES"
+          and c[0][3].get("video_url") == "https://x.test/s.mp4")
+
+    # IG story with two media items is rejected
+    CALLS.clear()
+    try:
+        mm.publish_ig(job(media=["https://x.test/a.jpg",
+                                 "https://x.test/b.jpg"],
+                          format="story"), "main")
+        raise SystemExit("ig multi-media story was NOT rejected")
+    except mm.JobError:
+        check("ig multi-media story rejected with JobError", True)
+
+    # Page story, photo: unpublished upload then photo_stories
+    CALLS.clear()
+    out = mm.publish_page(job(media=["https://x.test/s.jpg"],
+                              format="story"), "main")
+    posts = [c for c in CALLS if c[0] == "graph" and c[1] == "POST"]
+    check("page story photo returns story id", out == "story-photo-1")
+    check("page story photo uploads unpublished first",
+          posts[0][2].endswith("/photos")
+          and posts[0][3].get("published") == "false"
+          and "caption" not in posts[0][3])
+    check("page story photo then calls photo_stories with photo_id",
+          posts[1][2].endswith("/photo_stories")
+          and posts[1][3].get("photo_id") == "photo-1")
+
+    # Page story, video: start -> rupload -> finish
+    CALLS.clear()
+    RUPLOADS.clear()
+    out = mm.publish_page(job(media=["https://x.test/s.mp4"],
+                              format="story"), "main")
+    posts = [c for c in CALLS if c[0] == "graph" and c[1] == "POST"]
+    check("page story video returns story id", out == "story-video-1")
+    check("page story video starts upload phase",
+          posts[0][2].endswith("/video_stories")
+          and posts[0][3].get("upload_phase") == "start")
+    check("page story video uploads bytes to the rupload URL",
+          RUPLOADS == [("https://rupload.test/vid-1", b"fake-video-bytes")])
+    check("page story video finishes with the video_id",
+          posts[1][2].endswith("/video_stories")
+          and posts[1][3].get("upload_phase") == "finish"
+          and posts[1][3].get("video_id") == "vid-1")
+
+    # Page story without media is rejected
+    try:
+        mm.publish_page(job(media=[], format="story"), "main")
+        raise SystemExit("text-only page story was NOT rejected")
+    except mm.JobError:
+        check("text-only page story rejected with JobError", True)
+
+    # Threads has no Stories: rejected before any call
+    CALLS.clear()
+    try:
+        mm.publish_threads(job(media=["https://x.test/s.jpg"],
+                               format="story"), "main")
+        raise SystemExit("threads story was NOT rejected")
+    except mm.JobError:
+        check("threads story rejected with JobError", True)
+    check("threads story made no API calls", len(CALLS) == 0)
+
+    # Page feed post still works (regression)
+    CALLS.clear()
+    out = mm.publish_page(job(media=[]), "main")
+    check("page text feed post still publishes", out == "ig-container")
 
     print("ALL ADAPTER TESTS PASSED")
     return 0

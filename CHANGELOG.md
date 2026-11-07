@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.0 - 2026-11-07
+
+- **Stories, via `"format": "story"`** (exactly one media item per job):
+  - **Instagram Stories** (`media_type: STORIES`, image or video). The API
+    attaches no caption and no interactive stickers (link, poll, location) -
+    the story is the media itself.
+  - **Facebook Page Stories**: photos go through an unpublished upload and
+    then `/photo_stories`; videos use the three-phase `/video_stories`
+    flow (start -> binary upload to the rupload host -> finish). Page story
+    media may be a public URL or a local file.
+  - A story job targeting Threads is rejected with a clear error: Threads
+    has no Stories product.
+- Why a major version: the job schema's `format` field now selects between
+  feed post, Reel, and Story - and Meta offers no native scheduling for
+  Reels or Stories, which is exactly the gap MetaMux's daemon fills.
+
 ## v1.1 - 2026-11-07
 
 - **Instagram Reels**: a single-video job now publishes as a Reel

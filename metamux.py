@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""MetaMux 1.1 - a tiny, dependency-free, multi-account scheduler for Meta platforms.
+"""MetaMux 2.0 - a tiny, dependency-free, multi-account scheduler for Meta platforms.
 
-v1.1 adds Instagram Reels and Threads video posts: a single video job is
-published as a Reel on Instagram (auto-detected from the media URL, or forced
-with "format": "reel" in the job), and as a video post on Threads.
+v2.0 adds Stories: "format": "story" publishes a single photo or video as
+an Instagram Story (media_type STORIES) or a Facebook Page Story
+(photo_stories / three-phase video_stories). v1.1 added Instagram Reels and
+Threads video posts: a single video job is published as a Reel on Instagram
+(auto-detected from the media URL, or forced with "format": "reel"), and as
+a video post on Threads.
 
 One JSON file per job, one folder-based queue, one daemon. MetaMux publishes
 to Facebook Pages, Instagram and Threads through the *official* Meta Graph API
@@ -180,6 +183,46 @@ def graph_upload_photo(page_id, token, file_path, published=True, caption=""):
     return payload
 
 
+def fetch_media_bytes(item):
+    """Raw bytes for a job media item: download a public URL, or read a file."""
+    if is_url(item):
+        req = urllib.request.Request(
+            item, headers={"User-Agent": "metamux/2.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                return resp.read()
+        except urllib.error.URLError as e:
+            raise TransientError(f"could not download media {item}: {e.reason}")
+    with open(item, "rb") as f:
+        return f.read()
+
+
+def rupload_binary(upload_url, token, data):
+    """POST raw bytes to a Meta resumable-upload (rupload) URL, single chunk.
+
+    Used by the Page video_stories flow. Very large videos may need chunked
+    uploads; a single POST covers the file sizes Stories accept in practice.
+    """
+    req = urllib.request.Request(
+        upload_url, data=data, method="POST",
+        headers={"Authorization": f"OAuth {token}",
+                 "file_offset": "0",
+                 "Content-Type": "application/octet-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        msg = ""
+        try:
+            msg = json.loads(e.read().decode("utf-8")) \
+                      .get("error", {}).get("message", "")
+        except Exception:
+            pass
+        raise JobError(f"video upload failed (HTTP {e.code}): {msg}")
+    except urllib.error.URLError as e:
+        raise TransientError(f"network error during video upload: {e.reason}")
+
+
 # ------------------------------------------------------------------ queue util
 
 def ensure_dirs():
@@ -233,8 +276,36 @@ def publish_dryrun(job, alias=None):
     return fake_id
 
 
+def publish_page_story(page_id, token, media):
+    """Facebook Page Story: exactly one photo or one video.
+
+    Photo: upload unpublished, then promote via /photo_stories.
+    Video: three-phase /video_stories (start -> rupload binary -> finish).
+    The API attaches no caption and no interactive stickers to Stories.
+    """
+    if len(media) != 1:
+        raise JobError("page story: exactly one media item per story job")
+    item = str(media[0])
+    if is_video_url(item):
+        start = graph(f"{page_id}/video_stories", token,
+                      {"upload_phase": "start"})
+        video_id, upload_url = start["video_id"], start["upload_url"]
+        rupload_binary(upload_url, token, fetch_media_bytes(item))
+        out = graph(f"{page_id}/video_stories", token,
+                    {"upload_phase": "finish", "video_id": video_id})
+        return str(out.get("post_id") or out.get("id") or video_id)
+    if is_url(item):
+        up = graph(f"{page_id}/photos", token,
+                   {"url": item, "published": "false"})
+    else:
+        up = graph_upload_photo(page_id, token, item, published=False)
+    out = graph(f"{page_id}/photo_stories", token, {"photo_id": up["id"]})
+    return str(out.get("post_id") or out.get("id") or up["id"])
+
+
 def publish_page(job, alias):
-    """Facebook Page: text post, photo post (URL or local file), multi-photo."""
+    """Facebook Page: text post, photo post (URL or local file), multi-photo,
+    or a Story when the job has "format": "story"."""
     acc = get_account(alias)
     page_id = acc.get("page_id")
     if not page_id:
@@ -242,6 +313,11 @@ def publish_page(job, alias):
     token = account_token(acc, "page_token", "graph_token")
     caption = job.get("caption", "")
     media = job.get("media", [])
+
+    if str(job.get("format", "")).lower() == "story":
+        if not media:
+            raise JobError("page story: a story job needs one photo or video")
+        return publish_page_story(page_id, token, media)
 
     if not media:
         out = graph(f"{page_id}/feed", token, {"message": caption})
@@ -288,7 +364,7 @@ def _wait_container(api_fn, token, container_id, status_field, ok="FINISHED",
 
 
 def publish_ig(job, alias):
-    """Instagram (professional account): single image, carousel, or Reel.
+    """Instagram (professional account): image, carousel, Reel, or Story.
 
     Media must be public URLs - the Instagram Graph API does not accept
     local file uploads.
@@ -307,10 +383,20 @@ def publish_ig(job, alias):
                            "(the Graph API rejects local files): " + str(item))
     caption = job.get("caption", "")
     video = False
+    fmt = str(job.get("format", "")).lower()
+    if fmt == "story" and len(media) != 1:
+        raise JobError("ig story: exactly one media item per story job")
     if len(media) == 1:
         item = str(media[0])
-        fmt = str(job.get("format", "")).lower()
-        if fmt == "reel" or is_video_url(item):
+        if fmt == "story":
+            # Stories take no caption via the API, and no stickers.
+            if is_video_url(item):
+                params = {"media_type": "STORIES", "video_url": item}
+                video = True
+            else:
+                params = {"media_type": "STORIES", "image_url": item}
+            container = graph(f"{ig_id}/media", token, params)
+        elif fmt == "reel" or is_video_url(item):
             # The Graph API publishes single videos as Reels; there is no
             # separate feed-video type. "format": "reel" also covers video
             # URLs whose filename has no extension.
@@ -354,6 +440,9 @@ def publish_threads(job, alias):
     if not user_id:
         raise ConfigError(f"account {alias!r}: 'threads_user_id' is not set")
     token = account_token(acc, "threads_token", "graph_token")
+    if str(job.get("format", "")).lower() == "story":
+        raise JobError("threads: Threads has no Stories product - "
+                       "a story job cannot target Threads")
     text = job.get("caption", "")
     media = job.get("media", [])
     video = False
