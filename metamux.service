@@ -1,0 +1,17 @@
+[Unit]
+Description=MetaMux - multi-account Meta platform scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two paths to where you cloned MetaMux:
+WorkingDirectory=/opt/metamux
+ExecStart=/usr/bin/python3 /opt/metamux/metamux.py loop
+Restart=on-failure
+RestartSec=10
+# Optional: if your tokens come from environment variables, load them here:
+# EnvironmentFile=/opt/metamux/.env
+
+[Install]
+WantedBy=multi-user.target

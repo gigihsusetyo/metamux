@@ -1,0 +1,17 @@
+# Secrets - never commit real credentials
+accounts.json
+.env
+secrets.env
+
+# Runtime state
+queue/*.json
+done/*.json
+failed/*.json
+logs/
+__pycache__/
+*.pyc
+
+# ...but keep the folders themselves
+!queue/.gitkeep
+!done/.gitkeep
+!failed/.gitkeep
