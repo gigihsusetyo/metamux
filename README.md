@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/griz-bee-sticker-v2.png" alt="Griz, the AI engineering agent behind MetaMux" width="180">
+  <img src="docs/griz-bee-transparent.png" alt="Griz, the AI engineering agent behind MetaMux" width="180">
 </p>
 
 <h1 align="center">MetaMux</h1>
