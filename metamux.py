@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""MetaMux - a tiny, dependency-free, multi-account scheduler for Meta platforms.
+"""MetaMux 1.1 - a tiny, dependency-free, multi-account scheduler for Meta platforms.
+
+v1.1 adds Instagram Reels and Threads video posts: a single video job is
+published as a Reel on Instagram (auto-detected from the media URL, or forced
+with "format": "reel" in the job), and as a video post on Threads.
 
 One JSON file per job, one folder-based queue, one daemon. MetaMux publishes
 to Facebook Pages, Instagram and Threads through the *official* Meta Graph API
@@ -213,6 +217,14 @@ def is_url(value):
     return str(value).startswith(("http://", "https://"))
 
 
+VIDEO_EXTS = (".mp4", ".mov", ".m4v")
+
+
+def is_video_url(value):
+    path = str(value).split("?")[0].split("#")[0].lower()
+    return path.endswith(VIDEO_EXTS)
+
+
 # ------------------------------------------------------------------ adapters
 
 def publish_dryrun(job, alias=None):
@@ -276,7 +288,7 @@ def _wait_container(api_fn, token, container_id, status_field, ok="FINISHED",
 
 
 def publish_ig(job, alias):
-    """Instagram (professional account): single image or carousel.
+    """Instagram (professional account): single image, carousel, or Reel.
 
     Media must be public URLs - the Instagram Graph API does not accept
     local file uploads.
@@ -294,28 +306,49 @@ def publish_ig(job, alias):
             raise JobError("ig: media must be public URLs "
                            "(the Graph API rejects local files): " + str(item))
     caption = job.get("caption", "")
+    video = False
     if len(media) == 1:
-        container = graph(f"{ig_id}/media", token,
-                          {"image_url": media[0], "caption": caption})
+        item = str(media[0])
+        fmt = str(job.get("format", "")).lower()
+        if fmt == "reel" or is_video_url(item):
+            # The Graph API publishes single videos as Reels; there is no
+            # separate feed-video type. "format": "reel" also covers video
+            # URLs whose filename has no extension.
+            container = graph(f"{ig_id}/media", token,
+                              {"media_type": "REELS", "video_url": item,
+                               "caption": caption, "share_to_feed": "true"})
+            video = True
+        else:
+            container = graph(f"{ig_id}/media", token,
+                              {"image_url": item, "caption": caption})
         creation_id = container["id"]
     else:
         children = []
         for item in media:
-            child = graph(f"{ig_id}/media", token,
-                          {"image_url": item, "is_carousel_item": "true"})
+            if is_video_url(item):
+                params = {"video_url": str(item), "is_carousel_item": "true"}
+                video = True
+            else:
+                params = {"image_url": str(item), "is_carousel_item": "true"}
+            child = graph(f"{ig_id}/media", token, params)
             children.append(child["id"])
         container = graph(f"{ig_id}/media", token,
                           {"media_type": "CAROUSEL",
                            "children": ",".join(children),
                            "caption": caption})
         creation_id = container["id"]
-    _wait_container(graph, token, creation_id, "status_code")
+    if video:
+        # Video containers process much longer than images.
+        _wait_container(graph, token, creation_id, "status_code",
+                        tries=60, delay=5)
+    else:
+        _wait_container(graph, token, creation_id, "status_code")
     out = graph(f"{ig_id}/media_publish", token, {"creation_id": creation_id})
     return str(out["id"])
 
 
 def publish_threads(job, alias):
-    """Threads: text-only post, or a single image post (public URL)."""
+    """Threads: text-only post, or a single image/video post (public URL)."""
     acc = get_account(alias)
     user_id = acc.get("threads_user_id")
     if not user_id:
@@ -323,16 +356,25 @@ def publish_threads(job, alias):
     token = account_token(acc, "threads_token", "graph_token")
     text = job.get("caption", "")
     media = job.get("media", [])
+    video = False
     if media:
         item = str(media[0])
         if not is_url(item):
             raise JobError("threads: media must be a public URL: " + item)
-        params = {"media_type": "IMAGE", "image_url": item, "text": text}
+        if is_video_url(item):
+            params = {"media_type": "VIDEO", "video_url": item, "text": text}
+            video = True
+        else:
+            params = {"media_type": "IMAGE", "image_url": item, "text": text}
     else:
         params = {"media_type": "TEXT", "text": text}
     container = threads_api(f"{user_id}/threads", token, params)
     creation_id = container["id"]
-    _wait_container(threads_api, token, creation_id, "status")
+    if video:
+        _wait_container(threads_api, token, creation_id, "status",
+                        tries=60, delay=5)
+    else:
+        _wait_container(threads_api, token, creation_id, "status")
     out = threads_api(f"{user_id}/threads_publish", token,
                       {"creation_id": creation_id})
     return str(out["id"])
@@ -473,6 +515,7 @@ def cmd_add(src):
         print("ERROR: a job needs a 'publish_at' field (ISO 8601 with timezone)")
         return 1
     job.setdefault("caption", "")
+    job.setdefault("format", "feed")
     job.setdefault("media", [])
     job.setdefault("targets", [])
     job.setdefault("status", "draft")

@@ -52,7 +52,7 @@ small VM. That is MetaMux.
 - **File-based queue** - one JSON file per post (`queue/` → `done/` / `failed/`). No database, no web server, nothing to migrate. `ls` is your monitoring tool.
 - **Approval gate** - the daemon only publishes jobs with `"status": "approved"`. Drafts are never touched. A human (or an AI agent on their behalf) proposes content; a human approves; the daemon publishes. In production use, this gate is what made unattended publishing trustworthy.
 - **Multi-account mux** - define as many account sets as you like in `accounts.json`. A target is `"<platform>:<alias>"` (`page:main`, `ig:studio`, `threads:main`, ...), so one job can fan out across platforms *and* brands in a single run.
-- **Official APIs only** - Facebook Page posts, Instagram container publishing (single image + carousel) and Threads publishing, exactly the flows Meta documents. No scraping, no unofficial endpoints.
+- **Official APIs only** - Facebook Page posts, Instagram container publishing (single image, carousel, and Reels) and Threads publishing (text, image, video), exactly the flows Meta documents. No scraping, no unofficial endpoints.
 - **Failure semantics that respect the platform** - ordinary failures retry once, then move to `failed/`. Rate limits back the job off for 15 minutes *without* burning its attempts.
 - **Secrets stay secret** - tokens live in `accounts.json` (chmod 600, git-ignored) or in environment variables via `"env:VAR_NAME"` references. Nothing secret is ever logged.
 
@@ -116,6 +116,7 @@ walkthrough is in **[docs/SETUP-META-APP.md](docs/SETUP-META-APP.md)**.
 | `id` | Unique job name; becomes the filename in `queue/` |
 | `caption` | The exact text that will be published |
 | `media` | Media list. **Instagram & Threads require public URLs.** Facebook Pages accept public URLs *or* local file paths. |
+| `format` | Optional. `feed` (default) or `reel`. A single video URL is auto-detected as a Reel on Instagram and a video post on Threads even without this field; `reel` covers extension-less video URLs |
 | `targets` | Any mix of `page:<alias>`, `ig:<alias>`, `threads:<alias>`, plus `dryrun` for testing |
 | `publish_at` | ISO 8601 with timezone. The scheduler owns the clock - adapters publish "now" when a job falls due |
 | `status` | `draft` (never published) or `approved` (will publish when due) |
@@ -134,6 +135,7 @@ sudo systemctl enable --now metamux
 
 ```
 metamux.py            the whole scheduler (stdlib only)
+CHANGELOG.md          what changed in each version
 accounts.example.json config template - copy to accounts.json
 examples/             sample jobs
 queue/  done/  failed/  logs/    runtime state (git-ignored)
@@ -145,14 +147,18 @@ tests/smoke_test.py   end-to-end dry-run test, no network needed
 
 ```bash
 python3 tests/smoke_test.py
+python3 tests/test_adapters.py
 ```
 
-Runs the real CLI in a temp folder: an approved `dryrun` job must land in
-`done/` with a result, and a `draft` job must stay untouched in `queue/`.
+The smoke test runs the real CLI in a temp folder: an approved `dryrun`
+job must land in `done/` with a result, and a `draft` job must stay
+untouched in `queue/`. The adapter tests stub the Meta APIs and assert
+that every job shape (image, Reel, carousel, Threads text/video) produces
+the right API calls - no network, no tokens.
 
 ## Roadmap
 
-**v1.1 - Video, same flows**
+**v1.1 - Video, same flows** ✅ *shipped*
 - Instagram Reels (`media_type: REELS`, public video URLs)
 - Threads video posts (`media_type: VIDEO`)
 
