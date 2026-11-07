@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""MetaMux 2.0 - a tiny, dependency-free, multi-account scheduler for Meta platforms.
+"""MetaMux 2.1 - a tiny, dependency-free, multi-account scheduler for Meta platforms.
 
-v2.0 adds Stories: "format": "story" publishes a single photo or video as
+v2.1 completes the last roadmap item from the v1.x line: Facebook Page
+Reels via the three-phase video_reels upload ("format": "reel", or any
+single-video Page job). v2.0 added Stories: "format": "story" publishes a
+single photo or video as
 an Instagram Story (media_type STORIES) or a Facebook Page Story
 (photo_stories / three-phase video_stories). v1.1 added Instagram Reels and
 Threads video posts: a single video job is published as a Reel on Instagram
@@ -187,7 +190,7 @@ def fetch_media_bytes(item):
     """Raw bytes for a job media item: download a public URL, or read a file."""
     if is_url(item):
         req = urllib.request.Request(
-            item, headers={"User-Agent": "metamux/2.0"})
+            item, headers={"User-Agent": "metamux/2.1"})
         try:
             with urllib.request.urlopen(req, timeout=180) as resp:
                 return resp.read()
@@ -276,6 +279,39 @@ def publish_dryrun(job, alias=None):
     return fake_id
 
 
+def _wait_video_ready(token, video_id, tries=36, delay=5):
+    """Poll a Page video's processing status until Meta reports it ready."""
+    for _ in range(tries):
+        st = graph(video_id, token, {"fields": "status"}, method="GET")
+        status = st.get("status") or {}
+        vstatus = status.get("video_status")
+        if vstatus is None or vstatus == "ready":
+            return
+        if vstatus == "error":
+            raise JobError(f"video {video_id} processing finished with error")
+        time.sleep(delay)
+    raise JobError(f"video {video_id} not ready after {tries} checks")
+
+
+def publish_page_reel(page_id, token, item, caption=""):
+    """Facebook Page Reel: three-phase /video_reels upload.
+
+    start -> upload the binary to the rupload host -> wait until Meta has
+    processed the video -> finish with video_state=PUBLISHED. The caption
+    becomes the Reel description. Media may be a public URL or a local file.
+    """
+    start = graph(f"{page_id}/video_reels", token, {"upload_phase": "start"})
+    video_id, upload_url = start["video_id"], start["upload_url"]
+    rupload_binary(upload_url, token, fetch_media_bytes(item))
+    _wait_video_ready(token, video_id)
+    params = {"upload_phase": "finish", "video_id": video_id,
+              "video_state": "PUBLISHED"}
+    if caption:
+        params["description"] = caption
+    out = graph(f"{page_id}/video_reels", token, params)
+    return str(out.get("post_id") or out.get("id") or video_id)
+
+
 def publish_page_story(page_id, token, media):
     """Facebook Page Story: exactly one photo or one video.
 
@@ -304,8 +340,8 @@ def publish_page_story(page_id, token, media):
 
 
 def publish_page(job, alias):
-    """Facebook Page: text post, photo post (URL or local file), multi-photo,
-    or a Story when the job has "format": "story"."""
+    """Facebook Page: text/photo/multi-photo feed posts; a Reel for a single
+    video (or "format": "reel"); a Story for "format": "story"."""
     acc = get_account(alias)
     page_id = acc.get("page_id")
     if not page_id:
@@ -314,10 +350,23 @@ def publish_page(job, alias):
     caption = job.get("caption", "")
     media = job.get("media", [])
 
-    if str(job.get("format", "")).lower() == "story":
+    fmt = str(job.get("format", "")).lower()
+    if fmt == "story":
         if not media:
             raise JobError("page story: a story job needs one photo or video")
         return publish_page_story(page_id, token, media)
+
+    if fmt == "reel":
+        if len(media) != 1:
+            raise JobError("page reel: exactly one video per reel job")
+        if not is_video_url(str(media[0])):
+            raise JobError("page reel: media must be a video "
+                           "(.mp4/.mov/.m4v), as a URL or a local file")
+        return publish_page_reel(page_id, token, str(media[0]), caption)
+
+    if len(media) == 1 and is_video_url(str(media[0])):
+        # A lone video on a Page is a Reel - same convention as Instagram.
+        return publish_page_reel(page_id, token, str(media[0]), caption)
 
     if not media:
         out = graph(f"{page_id}/feed", token, {"message": caption})

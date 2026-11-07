@@ -16,6 +16,9 @@ tests assert that each job shape produces the right API calls:
   - Page story video  -> video_stories start -> rupload -> finish
   - Story misuse      -> multi-media IG story, text-only Page story and any
                          Threads story are rejected with JobError
+  - Page reel         -> video_reels start -> rupload -> finish PUBLISHED,
+                         via format="reel" or auto-detected single video;
+                         an image or two videos with format="reel" rejected
 
 Run: python3 tests/test_adapters.py
 """
@@ -49,6 +52,11 @@ def fake_graph(path, token, params=None, method="POST"):
             return {"video_id": "vid-1",
                     "upload_url": "https://rupload.test/vid-1"}
         return {"post_id": "story-video-1"}
+    if path.endswith("/video_reels"):
+        if (params or {}).get("upload_phase") == "start":
+            return {"video_id": "vid-9",
+                    "upload_url": "https://rupload.test/vid-9"}
+        return {"post_id": "reel-1"}
     if path.endswith("/photos"):
         return {"id": "photo-1"}
     return {"id": "ig-container"}
@@ -244,6 +252,46 @@ def main():
     except mm.JobError:
         check("threads story rejected with JobError", True)
     check("threads story made no API calls", len(CALLS) == 0)
+
+    # Page reel via format="reel": start -> rupload -> finish PUBLISHED
+    CALLS.clear()
+    RUPLOADS.clear()
+    out = mm.publish_page(job(media=["https://x.test/r.mp4"],
+                              format="reel"), "main")
+    posts = [c for c in CALLS if c[0] == "graph" and c[1] == "POST"]
+    check("page reel returns reel id", out == "reel-1")
+    check("page reel starts the video_reels upload",
+          posts[0][2].endswith("/video_reels")
+          and posts[0][3].get("upload_phase") == "start")
+    check("page reel uploads bytes to the rupload URL",
+          RUPLOADS == [("https://rupload.test/vid-9", b"fake-video-bytes")])
+    check("page reel finishes PUBLISHED with caption as description",
+          posts[-1][2].endswith("/video_reels")
+          and posts[-1][3].get("upload_phase") == "finish"
+          and posts[-1][3].get("video_id") == "vid-9"
+          and posts[-1][3].get("video_state") == "PUBLISHED"
+          and posts[-1][3].get("description") == "hello")
+
+    # Page reel auto-detected: single video, no format field
+    CALLS.clear()
+    out = mm.publish_page(job(media=["https://x.test/r.mov"]), "main")
+    check("page single video auto-routes to Reel", out == "reel-1")
+
+    # Page reel misuse is rejected
+    for bad in (job(media=["https://x.test/p.jpg"], format="reel"),
+                job(media=["https://x.test/a.mp4",
+                           "https://x.test/b.mp4"], format="reel")):
+        try:
+            mm.publish_page(bad, "main")
+            raise SystemExit("bad page reel job was NOT rejected")
+        except mm.JobError:
+            pass
+    check("page reel with image / two videos rejected with JobError", True)
+
+    # Page single photo still goes to /photos (regression)
+    CALLS.clear()
+    out = mm.publish_page(job(media=["https://x.test/p.jpg"]), "main")
+    check("page single photo still publishes via /photos", out == "photo-1")
 
     # Page feed post still works (regression)
     CALLS.clear()

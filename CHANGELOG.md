@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1 - 2026-11-07
+
+- **Facebook Page Reels** - the roadmap item originally slated as v1.2,
+  shipped on top of v2.0. Three-phase `/video_reels` upload (start ->
+  binary upload to the rupload host -> finish with
+  `video_state=PUBLISHED`, after polling the video's processing status).
+  Trigger it with `"format": "reel"`, or simply give a Page job a single
+  video: like Instagram, a lone video on a Page is a Reel. The caption
+  becomes the Reel description; media may be a public URL or a local file.
+
 ## v2.0 - 2026-11-07
 
 - **Stories, via `"format": "story"`** (exactly one media item per job):
